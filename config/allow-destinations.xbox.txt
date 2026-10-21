@@ -1,0 +1,25 @@
+# Сервисы Xbox. Одна строка покрывает само имя и поддомены глубиной до 4 меток.
+# Источник обязательных зон: Microsoft Game Development Kit, «Required domains for Xbox services».
+# https://learn.microsoft.com/en-us/gaming/gdk/docs/gdk-dev/console-dev/dev-kits/settings/configure-dev-network
+
+# Сеть Xbox
+xboxlive.com
+xbox.com
+xboxservices.com
+gamepass.com
+
+# Эти три зоны Microsoft тоже требует для сервисов Xbox.
+# Они общие: через VPS пойдёт не только консоль, но и любой сайт на этих именах.
+# dns.msftncsi.com сервис отвечает сам адресом Microsoft.
+# www.msftconnecttest.com не подменяется: приставка ходит за файлом проверки на Microsoft.
+# xbox.ipv6.microsoft.com сервис не подменяет: приставка проверяет свой IPv6 напрямую у Microsoft.
+bing.com
+microsoft.com
+akamai.net
+
+# Картинки магазина и пакеты игр с dl.delivery.mp.microsoft.com и assets*.xboxlive.com
+# перечислены в direct-destinations.txt и качаются напрямую, не через VPS.
+akamaized.net
+
+# Вход в аккаунт Microsoft: login.live.com. Тоже общая зона.
+live.com

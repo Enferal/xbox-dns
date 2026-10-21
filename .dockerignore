@@ -1,0 +1,8 @@
+.env
+.git
+.gitignore
+README.md
+deploy
+**/*.md
+**/__pycache__
+**/*.pyc

@@ -1,0 +1,13 @@
+# Домены, которые проксируются. Одна запись на строку.
+# example.com покрывает само имя и поддомены глубиной до 4 меток:
+#   example.com
+#   www.example.com
+#   a.b.example.com
+#   a.b.c.example.com
+#   a.b.c.d.example.com
+# Имя a.b.c.d.e.example.com уже не входит.
+# Запись *.example.com означает то же самое.
+# Пока здесь нет ни одного домена, сервис не запустится.
+
+# example.com
+# пример.рф

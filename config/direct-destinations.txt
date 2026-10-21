@@ -1,0 +1,11 @@
+# Закачка и крупные файлы. Эти имена не подменяются адресом VPS.
+# Приставка получает настоящий адрес сети доставки и качает со своего IP.
+# Строка покрывает само имя и поддомены той же глубины, что и основной список.
+dl.delivery.mp.microsoft.com
+dlassets.xboxlive.com
+dlassets2.xboxlive.com
+assets1.xboxlive.com
+assets2.xboxlive.com
+assets3.xboxlive.com
+assets4.xboxlive.com
+assets5.xboxlive.com

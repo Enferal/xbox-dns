@@ -1,0 +1,23 @@
+services:
+  egress-proxy:
+    build: .
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      EXIT_IPS_FILE: /etc/egress-proxy/exit-ips.txt
+      DESTINATIONS_FILE: /etc/egress-proxy/allow-destinations.txt
+    volumes:
+      - ./config:/etc/egress-proxy:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python3", "/opt/egress-proxy/egress_proxy.py", "--check"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
