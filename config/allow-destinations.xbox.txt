@@ -38,6 +38,8 @@ msftauthimages.net
 
 # UFC 5 и другие игры EA. Адреса blaze и gos меняются, поэтому нужна вся зона.
 # Закачка игр EA с этих имён не идёт: пакеты остаются на assets и dl.delivery.
+# Имена мало: редиректор слушает TCP 42130, gosca — 44326, blaze — 15000-15099.
+# Эти порты задаются в PROXY_PORTS, не здесь.
 ea.com
 
 # Облачные сохранения Xbox: titlestoragewus0404.blob.core.windows.net и другие регионы.

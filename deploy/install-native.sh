@@ -235,7 +235,7 @@ ask_value DNS_PORT \
   "Порт DNS, который указывают на устройстве." \
   "53" "53" number
 ask_value PROXY_PORTS \
-  "Порты, через которые открывается сайт. Несколько значений пишутся через запятую." \
+  "Порты, через которые открывается сайт. Несколько значений через запятую, диапазон пишется как 15000-15099." \
   "80,443" "80,443" text
 ask_value DNS_UPSTREAM "$dns_hint" "$vps_dns" "$vps_dns" text vps
 ask_value MAX_WILDCARD_DEPTH \
@@ -251,7 +251,7 @@ ask_value ALLOW_CLIENTS "$allow_hint" "$allow_example" "" allow
 
 # python3 запускает службу. iproute2 даёт ip и ss. dig берётся из bind9-dnsutils.
 # ca-certificates нужен apt и git по HTTPS. ufw: SSH открывается всегда,
-# а 53, 80 и 443 — только если правил ещё нет или так выбран ответ. git нужен для git pull.
+# а 53 и порты из PROXY_PORTS — только если правил ещё нет или так выбран ответ. git нужен для git pull.
 ensure_requirements() {
   if [ ! -r /etc/os-release ] || ! command -v apt-get >/dev/null 2>&1; then
     echo "Нужна Ubuntu 22.04 или 24.04 с apt." >&2
@@ -401,7 +401,7 @@ fi
   printf 'LISTEN_IP=%s\n' "$LISTEN_IP"
   printf '%s\n' '# DNS_PORT — пример: 53'
   printf 'DNS_PORT=%s\n' "$DNS_PORT"
-  printf '%s\n' '# PROXY_PORTS — пример: 80,443'
+  printf '%s\n' '# PROXY_PORTS — пример: 80,443 или 80,443,42130,44326,15000-15099'
   printf 'PROXY_PORTS=%s\n' "$PROXY_PORTS"
   printf '%s\n' "# DNS_UPSTREAM — по умолчанию DNS этого VPS: $vps_dns"
   printf 'DNS_UPSTREAM=%s\n' "$DNS_UPSTREAM"
@@ -475,14 +475,29 @@ ufw_delete_kind() {
 ufw_open_service() {
   ufw allow 53/tcp
   ufw allow 53/udp
-  ufw allow 80/tcp
-  ufw allow 443/tcp
+  old_ifs=$IFS
+  IFS=,
+  for token in $PROXY_PORTS; do
+    IFS=$old_ifs
+    token=$(printf '%s' "$token" | tr -d '[:space:]')
+    [ -n "$token" ] || continue
+    case "$token" in
+      *-*)
+        ufw allow "${token%%-*}:${token#*-}/tcp"
+        ;;
+      *)
+        ufw allow "$token/tcp"
+        ;;
+    esac
+    IFS=,
+  done
+  IFS=$old_ifs
 }
 
 configure_service_firewall() {
   lines=$(ufw_service_lines)
   if [ -z "$lines" ]; then
-    echo "Правил для 53, 80 и 443 нет. Открываю их для всех."
+    echo "Правил для 53, 80 и 443 нет. Открываю DNS и порты из PROXY_PORTS для всех."
     ufw_open_service
     return
   fi
@@ -507,7 +522,7 @@ configure_service_firewall() {
   if [ -n "$limited" ]; then
     echo "адреса — убрать разрешения для всех и оставить только правила с адресом."
   fi
-  echo "все — удалить эти правила и открыть 53, 80 и 443 для всех."
+  echo "все — удалить эти правила и открыть 53 и порты из PROXY_PORTS для всех."
   printf 'Что сделать: '
   IFS= read -r entered < /dev/tty || entered=
   case "$entered" in
@@ -527,7 +542,7 @@ configure_service_firewall() {
     все|Все)
       ufw_delete_kind all
       ufw_open_service
-      echo "Порты 53, 80 и 443 открыты для всех."
+      echo "Порты 53 и список PROXY_PORTS открыты для всех."
       ;;
     *)
       echo "Не понял ответ. Правила файрвола оставляю."

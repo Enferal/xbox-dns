@@ -30,6 +30,8 @@ from egress_proxy import (
     log_text,
     parse_answers,
     parse_domain,
+    parse_ports,
+    format_ports,
     synthetic_response,
 )
 
@@ -210,6 +212,21 @@ def main() -> int:
     else:
         print("публичный адрес внутри IPv6-записи должен остаться целью")
         return 1
+    ports = parse_ports("80,443,42130,44326,15000-15002,443")
+    if ports != [80, 443, 42130, 44326, 15000, 15001, 15002]:
+        print(ports)
+        return 1
+    if format_ports(ports) != "80, 443, 42130, 44326, 15000-15002":
+        print(format_ports(ports))
+        return 1
+    for bad in ("0", "65536", "15099-15000", "abc", "80-"):
+        try:
+            parse_ports(bad)
+        except ConfigError:
+            pass
+        else:
+            print(f"порт должен быть отвергнут: {bad}")
+            return 1
     if "\n" in log_text("xbox\nlive") or log_text("xbox\nlive") != "xbox?live":
         print(log_text("xbox\nlive"))
         return 1

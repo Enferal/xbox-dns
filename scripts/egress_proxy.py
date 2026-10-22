@@ -1163,20 +1163,59 @@ async def handle_dns_tcp(settings: Settings, reader: asyncio.StreamReader, write
         writer.close()
 
 
+MAX_PROXY_PORTS = 256
+
+
 def parse_ports(value: str) -> list[int]:
-    ports = []
+    ports: list[int] = []
+    seen: set[int] = set()
     for token in value.split(","):
         token = token.strip()
         if not token:
             continue
-        port = int(token)
-        if not 1 <= port <= 65535:
-            fail(f"Порт {port} вне диапазона")
-        if port not in ports:
+        if "-" in token:
+            left, right = token.split("-", 1)
+            try:
+                start, end = int(left), int(right)
+            except ValueError:
+                fail(f"Диапазон портов {token} записан не числами")
+            if not 1 <= start <= end <= 65535:
+                fail(f"Диапазон портов {token} вне 1-65535")
+            expanded = range(start, end + 1)
+        else:
+            try:
+                start = int(token)
+            except ValueError:
+                fail(f"Порт {token} не число")
+            if not 1 <= start <= 65535:
+                fail(f"Порт {start} вне диапазона")
+            expanded = (start,)
+        for port in expanded:
+            if port in seen:
+                continue
+            seen.add(port)
             ports.append(port)
+            if len(ports) > MAX_PROXY_PORTS:
+                fail(f"PROXY_PORTS содержит больше {MAX_PROXY_PORTS} портов")
     if not ports:
         fail("PROXY_PORTS пуст")
     return ports
+
+
+def format_ports(ports: list[int]) -> str:
+    ordered = sorted(set(ports))
+    if not ordered:
+        return ""
+    chunks: list[str] = []
+    start = previous = ordered[0]
+    for port in ordered[1:]:
+        if port == previous + 1:
+            previous = port
+            continue
+        chunks.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = port
+    chunks.append(str(start) if start == previous else f"{start}-{previous}")
+    return ", ".join(chunks)
 
 
 async def load_exit_addresses(path: str, upstreams: list[str], own: set[str]) -> tuple[list[str], list[str]]:
@@ -1265,7 +1304,7 @@ def print_plan(settings: Settings) -> None:
     print(f"DNS отдаёт клиентам из списка: {published}")
     print(
         f"Слушаем {settings.listen_ip}:{settings.dns_port}, "
-        f"прокси порты {', '.join(map(str, settings.proxy_ports))}"
+        f"прокси порты {format_ports(settings.proxy_ports)}"
     )
     if settings.allow:
         print("Пускать только: " + ", ".join(str(item) for item in settings.allow))
