@@ -250,7 +250,8 @@ ask_value IPV6 \
 ask_value ALLOW_CLIENTS "$allow_hint" "$allow_example" "" allow
 
 # python3 запускает службу. iproute2 даёт ip и ss. dig берётся из bind9-dnsutils.
-# ca-certificates нужен apt и git по HTTPS. ufw открывает порты. git нужен для git pull.
+# ca-certificates нужен apt и git по HTTPS. ufw: SSH открывается всегда,
+# а 53, 80 и 443 — только если правил ещё нет или так выбран ответ. git нужен для git pull.
 ensure_requirements() {
   if [ ! -r /etc/os-release ] || ! command -v apt-get >/dev/null 2>&1; then
     echo "Нужна Ubuntu 22.04 или 24.04 с apt." >&2
@@ -438,15 +439,108 @@ export DIRECT_FILE=/etc/egress-proxy/direct-destinations.txt
 
 python3 /usr/local/lib/egress-proxy/egress_proxy.py --check-config
 
+ufw_service_lines() {
+  ufw status numbered 2>/dev/null | grep -E '^\[[[:space:]]*[0-9]+\][[:space:]]+(53|80|443)(/tcp|/udp)?([[:space:]]|\()' || true
+}
+
+ufw_rule_numbers() {
+  kind=$1
+  ufw_service_lines | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$kind" in
+      open)
+        if ! printf '%s\n' "$line" | grep -q 'Anywhere'; then
+          continue
+        fi
+        ;;
+      limited)
+        if printf '%s\n' "$line" | grep -q 'Anywhere'; then
+          continue
+        fi
+        ;;
+      all) ;;
+      *) continue ;;
+    esac
+    printf '%s\n' "$line" | sed -n 's/^\[[[:space:]]*\([0-9][0-9]*\)\].*/\1/p'
+  done
+}
+
+ufw_delete_kind() {
+  nums=$(ufw_rule_numbers "$1" | sort -nr)
+  for n in $nums; do
+    ufw --force delete "$n"
+  done
+}
+
+ufw_open_service() {
+  ufw allow 53/tcp
+  ufw allow 53/udp
+  ufw allow 80/tcp
+  ufw allow 443/tcp
+}
+
+configure_service_firewall() {
+  lines=$(ufw_service_lines)
+  if [ -z "$lines" ]; then
+    echo "Правил для 53, 80 и 443 нет. Открываю их для всех."
+    ufw_open_service
+    return
+  fi
+  echo
+  echo "В файрволе уже есть правила для 53, 80 и 443:"
+  printf '%s\n' "$lines" | sed 's/^/  /'
+  limited=$(ufw_rule_numbers limited)
+  open=$(ufw_rule_numbers open)
+  if [ -n "$limited" ] && [ -n "$open" ]; then
+    echo "Есть и ограничение по адресу, и разрешение для всех."
+    echo "Разрешение для всех пускает чужой адрес, ограничение его не закрывает."
+  elif [ -n "$limited" ]; then
+    echo "Эти порты пускают только указанные адреса."
+  else
+    echo "Эти порты открыты для всех."
+  fi
+  if [ "$interactive" -eq 0 ]; then
+    echo "Терминала нет: правила файрвола не меняю."
+    return
+  fi
+  echo "Enter — оставить правила как есть."
+  if [ -n "$limited" ]; then
+    echo "адреса — убрать разрешения для всех и оставить только правила с адресом."
+  fi
+  echo "все — удалить эти правила и открыть 53, 80 и 443 для всех."
+  printf 'Что сделать: '
+  IFS= read -r entered < /dev/tty || entered=
+  case "$entered" in
+    ''|y|Y|yes|YES|д|Д|да|ДА)
+      echo "Правила файрвола оставляю."
+      ;;
+    адреса|Адреса)
+      if [ -z "$limited" ]; then
+        echo "Правил с адресом нет. Ничего не меняю, иначе порты закроются для всех."
+      elif [ -z "$open" ]; then
+        echo "Общих разрешений нет. Правила оставляю."
+      else
+        ufw_delete_kind open
+        echo "Общие разрешения для 53, 80 и 443 удалены."
+      fi
+      ;;
+    все|Все)
+      ufw_delete_kind all
+      ufw_open_service
+      echo "Порты 53, 80 и 443 открыты для всех."
+      ;;
+    *)
+      echo "Не понял ответ. Правила файрвола оставляю."
+      ;;
+  esac
+}
+
 ssh_port=$(printf '%s\n' "${SSH_CONNECTION:-}" | awk '{print $4}')
 ufw allow OpenSSH
 if [ -n "$ssh_port" ] && [ "$ssh_port" != "22" ]; then
   ufw allow "${ssh_port}/tcp"
 fi
-ufw allow 53/tcp
-ufw allow 53/udp
-ufw allow 80/tcp
-ufw allow 443/tcp
+configure_service_firewall
 ufw --force enable
 
 systemctl daemon-reload
