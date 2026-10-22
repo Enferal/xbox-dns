@@ -12,7 +12,8 @@ gamepass.com
 # Они общие: через VPS пойдёт не только консоль, но и любой сайт на этих именах.
 # dns.msftncsi.com сервис отвечает сам адресом Microsoft. Соединения на него нет.
 # www.msftconnecttest.com сервис направляет на VPS и сам отдаёт файл проверки связи.
-# xbox.ipv6.microsoft.com входит в microsoft.com и тоже идёт через VPS.
+# xbox.ipv6.microsoft.com входит в microsoft.com, но сервис его не подменяет:
+# приставка открывает это имя только по настоящему адресу Microsoft.
 bing.com
 microsoft.com
 akamai.net

@@ -39,6 +39,9 @@ CONNECTIVITY_PROBES = (
 )
 NCSI_IPV4 = "131.107.255.255"
 NCSI_IPV6 = "fd3e:4f5a:5b81::1"
+# Приставка не открывает это имя, если ответ совпадает с адресом её DNS.
+# Поэтому здесь остаётся настоящий адрес Microsoft, соединение идёт с дома.
+IPV6_CAPABILITY = "xbox.ipv6.microsoft.com"
 CONNECT_TEST_BODY = b"Microsoft Connect Test"
 # Крупные файлы. Эти имена не подменяются: приставка качает их со своего адреса.
 DIRECT_DOWNLOADS = (
@@ -80,6 +83,7 @@ class Settings:
     ipv6: bool = False
     direct: list[str] = field(default_factory=list)
     origin_cache: dict[str, tuple[float, list[str]]] = field(default_factory=dict)
+    nx_cache: dict[str, tuple[float, bool]] = field(default_factory=dict)
     dns_inflight: int = 0
     proxy_inflight: int = 0
 
@@ -206,6 +210,17 @@ def connectivity_addresses(name: str, qtype: int) -> list[str] | None:
     if qtype == QTYPE_AAAA:
         return [NCSI_IPV6]
     return []
+
+
+def is_ipv6_capability_name(name: str) -> bool:
+    try:
+        return ascii_name(name) == IPV6_CAPABILITY
+    except ConfigError:
+        return False
+
+
+def is_nxdomain(packet: bytes) -> bool:
+    return len(packet) >= 12 and (packet[3] & 0x0F) == 3
 
 
 def is_fixed_ncsi(name: str) -> bool:
@@ -849,12 +864,44 @@ async def forward_query(settings: Settings, payload: bytes, name: str = "") -> b
     return refused_response(payload, 2)
 
 
+async def name_missing(settings: Settings, name: str) -> bool:
+    """Имени нет у внешнего DNS. Такой ответ нельзя подменять адресом VPS."""
+    try:
+        text = ascii_name(name)
+    except ConfigError:
+        return False
+    now = asyncio.get_running_loop().time()
+    cached = settings.nx_cache.get(text)
+    if cached and cached[0] > now:
+        return cached[1]
+    try:
+        packet = await query_upstream(settings, text, QTYPE_A)
+    except ConfigError:
+        return False
+    missing = is_nxdomain(packet)
+    settings.nx_cache[text] = (now + 60, missing)
+    return missing
+
+
+def log_public_dns(response: bytes, name: str, kind: str, client_ip: str) -> None:
+    found, _cname = parse_answers(response)
+    shown = ", ".join(ip for ip, _ttl in found) or "без адреса"
+    print(
+        f"DNS {log_text(name)} {kind} -> {shown} проверка связи, адрес Microsoft клиент={client_ip}"
+    )
+
+
 def answer_query(settings: Settings, payload: bytes) -> bytes | None:
     try:
         name, qtype, qclass, _end = first_question(payload)
     except ValueError:
         return None
-    if qclass != 1 or is_fixed_ncsi(name) or is_direct_download(name, settings.direct, settings.depth):
+    if (
+        qclass != 1
+        or is_fixed_ncsi(name)
+        or is_ipv6_capability_name(name)
+        or is_direct_download(name, settings.direct, settings.depth)
+    ):
         return None
     listed = domain_matches(name, settings.domains, settings.depth)
     if not listed and not is_connectivity_probe(name):
@@ -890,13 +937,18 @@ async def handle_dns(settings: Settings, payload: bytes, client_ip: str) -> byte
             f"DNS {log_text(asked_name)} {kind} закачка напрямую, адрес сети доставки клиент={client_ip}"
         )
         return await forward_query(settings, payload, asked_name)
+    if is_ipv6_capability_name(asked_name):
+        response = await forward_query(settings, payload, asked_name)
+        log_public_dns(response, asked_name, kind, client_ip)
+        return response
+    listed = domain_matches(asked_name, settings.domains, settings.depth)
+    if listed and await name_missing(settings, asked_name):
+        print(f"DNS {log_text(asked_name)} нет такого имени, ответ DNS без подмены клиент={client_ip}")
+        return await forward_query(settings, payload, asked_name)
     if (
         asked_type == QTYPE_AAAA
         and not settings.ipv6
-        and (
-            domain_matches(asked_name, settings.domains, settings.depth)
-            or is_connectivity_probe(asked_name)
-        )
+        and (listed or is_connectivity_probe(asked_name))
     ):
         print(f"DNS {log_text(asked_name)} AAAA -> пусто, через прокси IPv6 нет клиент={client_ip}")
         return synthetic_response(payload, QTYPE_AAAA, [], settings.ttl)
@@ -1232,7 +1284,8 @@ def print_plan(settings: Settings) -> None:
         for name in settings.direct:
             print(f"  {name}")
     print("Проверка www.msftconnecttest.com отвечает сам VPS текстом Microsoft Connect Test.")
-    print("xbox.ipv6.microsoft.com идёт через VPS, как остальные имена Microsoft.")
+    print("xbox.ipv6.microsoft.com уходит на адреса Microsoft, приставка открывает его сама.")
+    print("Имени нет в DNS — приставке уходит этот ответ, адрес VPS не подставляется.")
     print(f"dns.msftncsi.com остаётся адресом Microsoft, по IPv6: {NCSI_IPV6}")
     print(f"Остальные имена уходят на {', '.join(settings.upstreams)}")
 
