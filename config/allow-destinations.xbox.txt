@@ -10,12 +10,15 @@ gamepass.com
 
 # Эти три зоны Microsoft тоже требует для сервисов Xbox.
 # Они общие: через VPS пойдёт не только консоль, но и любой сайт на этих именах.
-# dns.msftncsi.com сервис отвечает сам адресом Microsoft.
-# www.msftconnecttest.com не подменяется: приставка ходит за файлом проверки на Microsoft.
-# xbox.ipv6.microsoft.com сервис не подменяет: приставка проверяет свой IPv6 напрямую у Microsoft.
+# dns.msftncsi.com сервис отвечает сам адресом Microsoft. Соединения на него нет.
+# www.msftconnecttest.com сервис направляет на VPS и сам отдаёт файл проверки связи.
+# xbox.ipv6.microsoft.com входит в microsoft.com и тоже идёт через VPS.
 bing.com
 microsoft.com
 akamai.net
+
+# Списки сертификатов. Иначе ctldl.windowsupdate.com открывается с домашнего адреса.
+windowsupdate.com
 
 # Картинки магазина и пакеты игр с dl.delivery.mp.microsoft.com и assets*.xboxlive.com
 # перечислены в direct-destinations.txt и качаются напрямую, не через VPS.

@@ -138,13 +138,18 @@ def main() -> int:
         print("dns.msftncsi.com обязан быть адресом проверки Microsoft")
         return 1
     if connectivity_addresses("www.msftconnecttest.com", 1) is not None:
-        print("проверку HTTP нельзя подменять на VPS")
+        print("фиксированный адрес Microsoft только у dns.msftncsi.com")
         return 1
-    if answer_query(settings, build_query("www.msftconnecttest.com", 1)) is not None:
-        print("www.msftconnecttest.com нельзя подменять")
+    connect = answer_query(settings, build_query("www.msftconnecttest.com", 1))
+    if connect is None or [item[0] for item in parse_answers(connect)[0]] != ["203.0.113.10"]:
+        print("www.msftconnecttest.com должен указывать на VPS")
         return 1
-    if answer_query(settings, build_query("xbox.ipv6.microsoft.com", 1)) is not None:
-        print("xbox.ipv6.microsoft.com нельзя подменять")
+    if parse_answers(answer_query(settings, build_query("www.msftconnecttest.com", 28)) or b"")[0]:
+        print("www.msftconnecttest.com не должен получать IPv6")
+        return 1
+    capability = answer_query(settings, build_query("xbox.ipv6.microsoft.com", 1))
+    if capability is None or [item[0] for item in parse_answers(capability)[0]] != ["203.0.113.10"]:
+        print("xbox.ipv6.microsoft.com должен указывать на VPS")
         return 1
     flags = struct.unpack("!H", hijacked[2:4])[0]
     if flags & 0x0400 or not (flags & 0x8000) or not (flags & 0x0080):
