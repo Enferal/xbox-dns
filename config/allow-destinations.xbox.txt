@@ -35,3 +35,10 @@ msauth.net
 msauthimages.net
 msftauth.net
 msftauthimages.net
+
+# UFC 5 и другие игры EA. Адреса blaze и gos меняются, поэтому нужна вся зона.
+# Закачка игр EA с этих имён не идёт: пакеты остаются на assets и dl.delivery.
+ea.com
+
+# Облачные сохранения Xbox: titlestoragewus0404.blob.core.windows.net и другие регионы.
+blob.core.windows.net
