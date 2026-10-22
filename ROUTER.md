@@ -252,7 +252,7 @@ systemctl restart egress-proxy
 
 Полная переустановка снова задаёт вопросы: `sh deploy/install-native.sh` из `/opt/egress-proxy`.
 
-Имена Xbox лежат в `/etc/egress-proxy/allow-destinations.txt`. Строка `xboxlive.com` покрывает само имя и поддомены. Туда же входят общие зоны `microsoft.com`, `bing.com`, `live.com`, `akamai.net` и `akamaized.net`: через VPS пойдёт любой сайт на этих именах, кроме закачки.
+Имена Xbox лежат в `/etc/egress-proxy/allow-destinations.txt`. Строка `xboxlive.com` покрывает само имя и поддомены. Туда же входят общие зоны `microsoft.com`, `bing.com`, `live.com`, `microsoftonline.com`, `msauth.net`, `msftauth.net`, `akamai.net` и `akamaized.net`: через VPS пойдёт любой сайт на этих именах, кроме закачки.
 
 Закачка перечислена в `/etc/egress-proxy/direct-destinations.txt`: `dl.delivery.mp.microsoft.com`, `dlassets.xboxlive.com` и `assets1.xboxlive.com`–`assets5.xboxlive.com`. Для них DNS отдаёт настоящий адрес, файл качается с IP приставки. Файла на сервере нет — тот же список уже встроен в программу. После правки: `systemctl restart egress-proxy`. Выдерните питание приставки на 10 секунд, иначе она помнит старый адрес VPS для этих имён.
 

@@ -116,7 +116,7 @@ dig +short @127.0.0.1 user.auth.xboxlive.com A
 systemctl restart egress-proxy
 ```
 
-В примере Xbox ещё есть `xbox.com`, `xboxservices.com`, `gamepass.com`, `bing.com`, `microsoft.com`, `akamai.net`, `akamaized.net` и `live.com`. Последние пять общие: через VPS пойдёт любой сайт на этих именах. Не нужно — удалите строки и перезапустите службу.
+В примере Xbox ещё есть `xbox.com`, `xboxservices.com`, `gamepass.com`, `bing.com`, `microsoft.com`, `akamai.net`, `akamaized.net`, `live.com`, `microsoftonline.com`, `msauth.net` и `msftauth.net`. Зоны Microsoft, Bing, Akamai и страницы входа общие: через VPS пойдёт любой сайт на этих именах. Не нужно — удалите строки и перезапустите службу.
 
 Через сервис идёт TCP 80 и 443. UDP, в том числе часть трафика Xbox, мимо.
 

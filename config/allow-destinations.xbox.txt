@@ -21,5 +21,13 @@ akamai.net
 # перечислены в direct-destinations.txt и качаются напрямую, не через VPS.
 akamaized.net
 
-# Вход в аккаунт Microsoft: login.live.com. Тоже общая зона.
+# Вход в аккаунт Microsoft. login.live.com входит в live.com.
+# Страница входа ещё открывает login.microsoftonline.com и картинки на msauth.net и msftauth.net.
+# Эти зоны тоже общие: через VPS пойдёт любой сайт на этих именах.
 live.com
+microsoftonline.com
+microsoftonline-p.com
+msauth.net
+msauthimages.net
+msftauth.net
+msftauthimages.net
