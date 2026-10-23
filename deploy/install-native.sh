@@ -252,6 +252,7 @@ ask_value ALLOW_CLIENTS "$allow_hint" "$allow_example" "" allow
 # python3 запускает службу. iproute2 даёт ip и ss. dig берётся из bind9-dnsutils.
 # ca-certificates нужен apt и git по HTTPS. ufw: SSH открывается всегда,
 # а 53 и порты из PROXY_PORTS — только если правил ещё нет или так выбран ответ. git нужен для git pull.
+# openssl создаёт сертификат Web UI.
 ensure_requirements() {
   if [ ! -r /etc/os-release ] || ! command -v apt-get >/dev/null 2>&1; then
     echo "Нужна Ubuntu 22.04 или 24.04 с apt." >&2
@@ -279,7 +280,7 @@ ensure_requirements() {
   fi
   echo "Проверка пакетов на ${PRETTY_NAME}."
   missing=""
-  for pkg in python3 iproute2 ca-certificates bind9-dnsutils ufw git; do
+  for pkg in python3 iproute2 ca-certificates bind9-dnsutils ufw git openssl; do
     status=$(dpkg-query -W -f '${Status}' "$pkg" 2>/dev/null || true)
     case "$status" in
       "install ok installed")
@@ -602,3 +603,26 @@ else
 fi
 echo "На устройстве укажите DNS: ${vps_ip}"
 echo "Логи: journalctl -u egress-proxy -f"
+
+install_ui=${INSTALL_UI:-}
+if [ -z "$install_ui" ]; then
+  if [ "$interactive" -eq 1 ]; then
+    echo
+    printf 'Установить Web UI (панель управления в браузере, порт 8443)? [Y/n]: '
+    IFS= read -r reply < /dev/tty || reply=
+    case "$reply" in
+      n|N|no|NO|н|Н|нет|НЕТ) install_ui=0 ;;
+      *) install_ui=1 ;;
+    esac
+  else
+    install_ui=0
+  fi
+fi
+if [ "$install_ui" = "1" ]; then
+  echo
+  sh "$ROOT/deploy/install-ui.sh"
+elif [ -f /etc/systemd/system/egress-proxy-ui.service ]; then
+  echo "Web UI уже стоит. Обновить его: sh deploy/install-ui.sh"
+else
+  echo "Web UI не ставлю. Позже: sh deploy/install-ui.sh"
+fi
