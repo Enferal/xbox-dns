@@ -216,7 +216,7 @@ def main() -> int:
     if ports != [80, 443, 42130, 44326, 15000, 15001, 15002]:
         print(ports)
         return 1
-    if format_ports(ports) != "80, 443, 42130, 44326, 15000-15002":
+    if format_ports(ports) != "80, 443, 15000-15002, 42130, 44326":
         print(format_ports(ports))
         return 1
     for bad in ("0", "65536", "15099-15000", "abc", "80-"):
