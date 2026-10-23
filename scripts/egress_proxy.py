@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ipaddress
+import json
 import os
 import random
 import re
@@ -86,6 +87,10 @@ class Settings:
     nx_cache: dict[str, tuple[float, bool]] = field(default_factory=dict)
     dns_inflight: int = 0
     proxy_inflight: int = 0
+    stats: dict[str, int] = field(default_factory=dict)
+
+    def count(self, key: str) -> None:
+        self.stats[key] = self.stats.get(key, 0) + 1
 
     @property
     def exit_set(self) -> set[str]:
@@ -918,7 +923,9 @@ def answer_query(settings: Settings, payload: bytes) -> bytes | None:
 
 
 async def handle_dns(settings: Settings, payload: bytes, client_ip: str) -> bytes | None:
+    settings.count("dns_queries")
     if not client_allowed(settings, client_ip):
+        settings.count("dns_refused")
         print(f"Отказ DNS клиенту {client_ip}: адреса нет в ALLOW_CLIENTS")
         return None
     try:
@@ -933,6 +940,7 @@ async def handle_dns(settings: Settings, payload: bytes, client_ip: str) -> byte
         print(f"DNS {log_text(asked_name)} {kind} -> {', '.join(probe) or 'пусто'} проверка связи клиент={client_ip}")
         return synthetic_response(payload, asked_type, probe, settings.ttl)
     if is_direct_download(asked_name, settings.direct, settings.depth):
+        settings.count("dns_direct")
         print(
             f"DNS {log_text(asked_name)} {kind} закачка напрямую, адрес сети доставки клиент={client_ip}"
         )
@@ -954,6 +962,7 @@ async def handle_dns(settings: Settings, payload: bytes, client_ip: str) -> byte
         return synthetic_response(payload, QTYPE_AAAA, [], settings.ttl)
     local = answer_query(settings, payload)
     if local is not None:
+        settings.count("dns_hijacked")
         try:
             name, qtype, _, _ = first_question(payload)
         except ValueError:
@@ -963,6 +972,7 @@ async def handle_dns(settings: Settings, payload: bytes, client_ip: str) -> byte
             shown = settings.exits_v6 if qtype == QTYPE_AAAA else settings.exits_v4
             print(f"DNS {log_text(name)} {labels[qtype]} -> {', '.join(shown) or 'пусто'} клиент={client_ip}")
         return local
+    settings.count("dns_forwarded")
     return await forward_query(settings, payload, asked_name)
 
 
@@ -1039,13 +1049,16 @@ async def handle_proxy(settings: Settings, reader: asyncio.StreamReader, writer:
     peer_port = int(peer[1]) if len(peer) > 1 else 0
     port = int(sockname[1] or 0)
     print(f"TCP входящий порт={port} клиент={client_ip}:{peer_port}")
+    settings.count("tcp_accepted")
     if settings.proxy_inflight >= MAX_PROXY_CONNECTIONS:
+        settings.count("proxy_overflow")
         note_full("Прокси", f"{client_ip}:{peer_port}")
         writer.close()
         return
     settings.proxy_inflight += 1
     try:
         if not client_allowed(settings, client_ip):
+            settings.count("proxy_refused")
             print(f"Отказ прокси клиенту {client_ip}: адреса нет в ALLOW_CLIENTS")
             writer.close()
             return
@@ -1064,6 +1077,7 @@ async def handle_proxy(settings: Settings, reader: asyncio.StreamReader, writer:
                     writer.close()
                     return
             if not host or not domain_matches(host, settings.domains, settings.depth):
+                settings.count("proxy_no_name")
                 sample = head[:16].hex() if head else "-"
                 print(
                     f"Прокси закрыл соединение без подходящего имени, клиент={client_ip}:{peer_port} "
@@ -1079,9 +1093,11 @@ async def handle_proxy(settings: Settings, reader: asyncio.StreamReader, writer:
                 remote_writer.write(head)
                 await remote_writer.drain()
         except Exception as exc:
+            settings.count("proxy_errors")
             print(f"Прокси ошибка клиент={client_ip} порт={port}: {log_text(str(exc))}", file=sys.stderr)
             writer.close()
             return
+        settings.count("proxy_ok")
         print(f"Прокси {host}:{port} -> {origins[0]} с адреса {source or 'по маршруту'} клиент={client_ip}")
         left = asyncio.create_task(pipe(reader, remote_writer))
         right = asyncio.create_task(pipe(remote_reader, writer))
@@ -1264,6 +1280,41 @@ def env(name: str, default: str) -> str:
     return os.environ.get(name, default).strip() or default
 
 
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def parse_env_text(text: str) -> dict[str, str]:
+    """Строки KEY=VALUE как в EnvironmentFile systemd и env_file docker compose."""
+    found: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not ENV_KEY_RE.fullmatch(key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        found[key] = value
+    return found
+
+
+def apply_env_file(path: str, required: bool) -> None:
+    """Значения из файла важнее окружения процесса: этот файл правит Web UI."""
+    if not os.path.isfile(path):
+        if required:
+            fail(f"Нет файла {path}")
+        return
+    with open(path, encoding="utf-8-sig") as handle:
+        os.environ.update(parse_env_text(handle.read()))
+
+
 async def load_settings() -> Settings:
     domains = load_domains(env("DESTINATIONS_FILE", "/etc/egress-proxy/allow-destinations.txt"))
     direct = load_direct(env("DIRECT_FILE", "/etc/egress-proxy/direct-destinations.txt"))
@@ -1294,6 +1345,53 @@ async def load_settings() -> Settings:
         ipv6=ipv6,
         direct=direct,
     )
+
+
+def plan_dict(settings: Settings) -> dict:
+    return {
+        "domains": settings.domains,
+        "direct": settings.direct,
+        "exits_v4": settings.exits_v4,
+        "exits_v6": settings.exits_v6,
+        "listen_ip": settings.listen_ip,
+        "dns_port": settings.dns_port,
+        "proxy_ports": format_ports(settings.proxy_ports),
+        "upstreams": settings.upstreams,
+        "allow": [str(item) for item in settings.allow],
+        "depth": settings.depth,
+        "ttl": settings.ttl,
+        "ipv6": settings.ipv6,
+    }
+
+
+def write_status(path: str, settings: Settings, started: float) -> None:
+    data = {
+        "pid": os.getpid(),
+        "started_at": started,
+        "updated_at": time.time(),
+        "counters": dict(settings.stats),
+        "dns_inflight": settings.dns_inflight,
+        "proxy_inflight": settings.proxy_inflight,
+        "plan": plan_dict(settings),
+    }
+    folder = os.path.dirname(path) or "."
+    tmp = os.path.join(folder, f".{os.path.basename(path)}.{os.getpid()}.tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+async def status_loop(path: str, settings: Settings, interval: float = 5.0) -> None:
+    started = time.time()
+    warned = False
+    while True:
+        try:
+            write_status(path, settings, started)
+        except OSError as exc:
+            if not warned:
+                print(f"Не удалось записать статус в {path}: {exc}", file=sys.stderr)
+                warned = True
+        await asyncio.sleep(interval)
 
 
 def print_plan(settings: Settings) -> None:
@@ -1348,9 +1446,12 @@ class UdpNotice(asyncio.DatagramProtocol):
         )
 
 
-async def serve(check_only: bool) -> None:
+async def serve(check_only: bool, as_json: bool = False) -> None:
     settings = await load_settings()
-    print_plan(settings)
+    if as_json:
+        print(json.dumps({"ok": True, "plan": plan_dict(settings)}, ensure_ascii=False))
+    else:
+        print_plan(settings)
     if check_only:
         return
     loop = asyncio.get_running_loop()
@@ -1421,8 +1522,12 @@ async def serve(check_only: bool) -> None:
         except OSError as exc:
             print(f"IPv6-порт {port} не слушается: {exc}", file=sys.stderr)
     print("Сервис запущен")
+    status_path = os.environ.get("STATUS_FILE", "").strip()
+    status_task = asyncio.create_task(status_loop(status_path, settings)) if status_path else None
     while True:
         await asyncio.sleep(3600)
+        if status_task is not None and status_task.done():
+            status_task = asyncio.create_task(status_loop(status_path, settings))
 
 
 def healthcheck() -> int:
@@ -1443,12 +1548,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="DNS и прокси доменов через VPS")
     parser.add_argument("--check-config", action="store_true")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--json", action="store_true", help="вывод --check-config в JSON")
+    parser.add_argument("--env-file", help="файл KEY=VALUE, по умолчанию из EGRESS_ENV_FILE")
     args = parser.parse_args(argv)
     try:
+        if args.env_file:
+            apply_env_file(args.env_file, required=True)
+        elif os.environ.get("EGRESS_ENV_FILE", "").strip():
+            apply_env_file(os.environ["EGRESS_ENV_FILE"].strip(), required=False)
         if args.check:
             return healthcheck()
-        asyncio.run(serve(args.check_config))
+        asyncio.run(serve(args.check_config, args.json and args.check_config))
     except ConfigError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
