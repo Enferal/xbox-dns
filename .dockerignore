@@ -3,6 +3,8 @@
 .gitignore
 README.md
 deploy
+tests
+ui
 **/*.md
 **/__pycache__
 **/*.pyc

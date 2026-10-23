@@ -1,15 +1,22 @@
 services:
   egress-proxy:
     build: .
+    image: egress-proxy:local
+    container_name: egress-proxy
     network_mode: host
     restart: unless-stopped
     env_file:
       - .env
     environment:
+      # Значения из config/egress.env важнее .env: этот файл правит Web UI.
+      EGRESS_ENV_FILE: /etc/egress-proxy/egress.env
+      STATUS_FILE: /run/egress-proxy/status.json
       EXIT_IPS_FILE: /etc/egress-proxy/exit-ips.txt
       DESTINATIONS_FILE: /etc/egress-proxy/allow-destinations.txt
+      DIRECT_FILE: /etc/egress-proxy/direct-destinations.txt
     volumes:
       - ./config:/etc/egress-proxy:ro
+      - egress-state:/run/egress-proxy
     logging:
       driver: json-file
       options:
@@ -21,3 +28,41 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  # Web UI включается отдельно: docker compose --profile ui up -d
+  egress-ui:
+    build: .
+    image: egress-proxy:local
+    container_name: egress-ui
+    profiles: ["ui"]
+    network_mode: host
+    restart: unless-stopped
+    entrypoint: ["python3", "-u", "-m", "egress_ui"]
+    environment:
+      PYTHONPATH: /opt/egress-proxy
+      UI_ENV_FILE: /etc/egress-proxy-ui/ui.env
+      UI_SERVICE_BACKEND: docker
+      UI_DOCKER_CONTAINER: egress-proxy
+      UI_FIREWALL_BACKEND: none
+      EGRESS_CONFIG_DIR: /etc/egress-proxy
+      EGRESS_ENV_FILE: /etc/egress-proxy/egress.env
+      UI_STATUS_FILE: /run/egress-proxy/status.json
+      UI_STATE_DIR: /etc/egress-proxy-ui/state
+      UI_PROXY_SCRIPT: /opt/egress-proxy/egress_proxy.py
+      UI_PRESETS_DIR: /opt/egress-proxy/config
+      UI_REPO_DIR: /opt/egress-proxy
+      UI_TLS_CERT: /etc/egress-proxy-ui/tls.crt
+      UI_TLS_KEY: /etc/egress-proxy-ui/tls.key
+    volumes:
+      - ./config:/etc/egress-proxy
+      - ./ui:/etc/egress-proxy-ui
+      - egress-state:/run/egress-proxy:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  egress-state:

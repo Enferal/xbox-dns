@@ -3,3 +3,6 @@
 __pycache__/
 *.pyc
 .DS_Store
+# Пароль, сертификат и копии настроек Web UI в Docker
+/ui/
+/config/egress.env
