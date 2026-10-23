@@ -1,7 +1,13 @@
+* text=auto eol=lf
 *.sh text eol=lf
 Dockerfile text eol=lf
 *.service text eol=lf
 *.py text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
 *.yml text eol=lf
 *.txt text eol=lf
 *.md text eol=lf
@@ -9,3 +15,5 @@ LICENSE text eol=lf
 .env.example text eol=lf
 .env.xbox.example text eol=lf
 .env.xbox.test text eol=lf
+*.png binary
+*.ico binary
