@@ -8,6 +8,7 @@
 
 - этот файл — поставить службу и включить Xbox и UFC 5
 - [Web UI](#web-ui) — панель в браузере: статус, списки имён, клиенты, настройки, журнал, файрвол, обновление
+- [Проверка после установки](#проверка-после-установки), [Удаление](#удаление) и [установка с нуля](#установка-с-нуля)
 - [README_EASY.md](README_EASY.md) — то же самое короче и спокойнее
 - [README_STUPID.md](README_STUPID.md) — по шагам, если команды непривычны
 - [OPENWRT.md](OPENWRT.md) — домашний роутер на OpenWrt
@@ -54,7 +55,9 @@ sh deploy/install-native.sh
 
 В конце будет строка `На устройстве укажите DNS:` и адрес сервера. Его вписывают в DNS приставки.
 
-Последний вопрос установщика: `Установить Web UI? [Y/n]`. Про панель — раздел [Web UI](#web-ui).
+Последний вопрос установщика: `Установить Web UI? [Y/n]`. Про панель — раздел [Web UI](#web-ui). Без вопроса: `INSTALL_UI=1` или `INSTALL_UI=0` перед командой.
+
+Что проверить после установки — раздел [Проверка после установки](#проверка-после-установки). Убрать всё и поставить заново — [Удаление](#удаление).
 
 Повторный запуск `sh deploy/install-native.sh` снова задаёт вопросы и перезаписывает `/etc/egress-proxy/egress.env`. Для обычного обновления программы он не нужен. Обновление без вопросов:
 
@@ -327,3 +330,84 @@ docker compose --profile ui up -d
 - Изменения только запросами с токеном CSRF и проверкой `Origin`. Заголовки CSP, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, HSTS в режиме HTTPS.
 - Панель работает от root: ей нужны ufw, systemctl и запись `/etc/egress-proxy`. Внешние команды запускаются без shell, из короткого списка, каждое значение проверяется. Правила ufw для SSH и порта панели она не удаляет и ufw не выключает.
 - Не открывайте порт 8443 для всех. Лучше — только свой адрес в ufw или SSH-туннель.
+
+## Проверка после установки
+
+На сервере:
+
+```bash
+systemctl status egress-proxy egress-proxy-ui --no-pager
+dig +short @127.0.0.1 user.auth.xboxlive.com A
+cat /run/egress-proxy/status.json
+journalctl -u egress-proxy -n 30 --no-pager
+journalctl -u egress-proxy-ui -n 30 --no-pager
+```
+
+- В обеих службах `active (running)`.
+- `dig` печатает адрес этого сервера.
+- В `status.json` есть `counters`. Файл обновляется раз в 5 секунд.
+- В журнале панели есть строка `Web UI слушает …`.
+
+Панель отвечает:
+
+```bash
+curl -k https://127.0.0.1:8443/api/session   # режим HTTPS
+curl http://127.0.0.1:8443/api/session       # режим SSH-туннеля
+```
+
+Ответ — JSON со строкой `"authenticated": false`. Потом откройте панель в браузере: `https://АДРЕС_VPS:8443/` или через туннель `http://127.0.0.1:8443/`, войдите паролем и нажмите «Перезапустить» на «Обзоре».
+
+### Тесты на сервере
+
+Нужен только `python3`, тот же, что у службы:
+
+```bash
+cd /opt/egress-proxy
+python3 scripts/test_egress.py && echo OK
+python3 -m unittest discover -s tests -v
+```
+
+Последняя строка второй команды — `OK`. Тесты не трогают службу, файрвол и `/etc`: всё идёт во временных каталогах и на заглушках. Тесты страниц нужны только при правке `static/` и требуют Node.js 18+: `node --test tests/js/lib.test.mjs`.
+
+## Удаление
+
+```bash
+cd /opt/egress-proxy
+sh deploy/uninstall.sh
+```
+
+Скрипт спрашивает подтверждение и делает следующее:
+
+1. Сохраняет `/etc/egress-proxy` и `/etc/egress-proxy-ui` в архив `/root/egress-proxy-config-ДАТА.tar.gz`. Вернуть: `tar -xzf АРХИВ -C /`.
+2. Останавливает и удаляет службы `egress-proxy`, `egress-proxy-ui` и `egress-proxy-update`.
+3. Показывает правила ufw для DNS, `PROXY_PORTS`, порта панели и с комментарием `egress-ui`, спрашивает и удаляет их. Правила SSH не трогает, ufw не выключает.
+4. Возвращает `systemd-resolved` на `127.0.0.53:53`, если установщик его отключал.
+5. Удаляет `/usr/local/lib/egress-proxy`, `/etc/egress-proxy`, `/etc/egress-proxy-ui`, `/var/lib/egress-proxy-ui`, пользователя и группу `egress-proxy`.
+
+Пакеты (`python3`, `ufw`, `git`, `openssl` и другие) и каталог `/opt/egress-proxy` остаются. Без вопросов: `UNINSTALL_UFW=1 sh deploy/uninstall.sh` (без `UNINSTALL_UFW=1` правила ufw остаются).
+
+Если `deploy/uninstall.sh` в каталоге нет, код старый. Сначала получите новый: `git pull`, а для проверки ветки — `git fetch origin ВЕТКА && git checkout ВЕТКА`.
+
+Docker:
+
+```bash
+cd /opt/egress-proxy
+docker compose --profile ui down -v --rmi local
+```
+
+### Установка с нуля
+
+Удалить всё, скачать проект заново и поставить, как на чистый сервер. `ВЕТКА` — `main` или ветка, которую нужно проверить, например `feature/web-ui`.
+
+```bash
+cd /opt/egress-proxy
+git fetch origin ВЕТКА && git checkout ВЕТКА
+sh deploy/uninstall.sh
+cd / && rm -rf /opt/egress-proxy
+git clone -b ВЕТКА https://github.com/Enferal/xbox-dns.git /opt/egress-proxy
+cd /opt/egress-proxy
+python3 scripts/test_egress.py && python3 -m unittest discover -s tests
+sh deploy/install-native.sh
+```
+
+После `uninstall.sh` проверьте, что порты свободны: `ss -tulpn 'sport = :53 or sport = :80 or sport = :443 or sport = :8443'`. Остаться может только `127.0.0.53:53`. Дальше — разделы [Установка](#установка) и [Проверка после установки](#проверка-после-установки).
