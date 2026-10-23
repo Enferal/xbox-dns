@@ -91,6 +91,7 @@ class ValidateTest(unittest.TestCase):
             "DNS_PORT": ("70000", "DNS_PORT"),
             "LISTEN_IP": ("localhost", "LISTEN_IP"),
             "IPV6": ("2", "IPV6"),
+            "SPLIT_HTTPS": ("2", "SPLIT_HTTPS"),
             "DNS_UPSTREAM": ("1.1.1.1,dns.google", "DNS_UPSTREAM"),
             "ALLOW_CLIENTS": ("203.0.113.300", "ALLOW_CLIENTS"),
             "MAX_WILDCARD_DEPTH": ("21", "MAX_WILDCARD_DEPTH"),

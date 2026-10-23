@@ -112,6 +112,7 @@ class TempConfig:
             env_file=self.path("egress.env"),
             destinations_file=self.path("allow-destinations.txt"),
             direct_file=self.path("direct-destinations.txt"),
+            same_port_file=self.path("same-port-destinations.txt"),
             exit_ips_file=self.path("exit-ips.txt"),
             status_file=os.path.join(self.root, "status.json"),
             state_dir=os.path.join(self.root, "state"),

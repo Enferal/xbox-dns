@@ -17,6 +17,8 @@ from egress_proxy import (
     domain_matches,
     NCSI_IPV4,
     Settings,
+    ALIAS_PORT_BASE,
+    ALIAS_PORT_COUNT,
     answer_query,
     connect_test_response,
     connectivity_addresses,
@@ -28,8 +30,11 @@ from egress_proxy import (
     is_connectivity_probe,
     is_nxdomain,
     log_text,
+    origin_port,
     parse_answers,
+    proxy_ports_with_alias,
     parse_domain,
+    service_binding_rdata,
     parse_ports,
     format_ports,
     synthetic_response,
@@ -229,6 +234,102 @@ def main() -> int:
             return 1
     if "\n" in log_text("xbox\nlive") or log_text("xbox\nlive") != "xbox?live":
         print(log_text("xbox\nlive"))
+        return 1
+
+    def svcb_keys(rdata: bytes) -> list[tuple[int, bytes]]:
+        pos = 3
+        found = []
+        while pos + 4 <= len(rdata):
+            key, length = struct.unpack("!HH", rdata[pos : pos + 4])
+            pos += 4
+            found.append((key, rdata[pos : pos + length]))
+            pos += length
+        return found
+
+    plain = svcb_keys(service_binding_rdata(["203.0.113.10"]))
+    if [key for key, _value in plain] != [1, 4]:
+        print(plain)
+        return 1
+    shifted = svcb_keys(service_binding_rdata(["203.0.113.10"], 44410))
+    if [key for key, _value in shifted] != [1, 3, 4] or shifted[1][1] != struct.pack("!H", 44410):
+        print(shifted)
+        return 1
+    web = Settings(
+        domains=["themoviedb.org", "xboxlive.com"],
+        exits_v4=["203.0.113.10"],
+        exits_v6=[],
+        own_ips=set(),
+        listen_ip="0.0.0.0",
+        dns_port=53,
+        proxy_ports=[80, 443],
+        upstreams=["1.1.1.1"],
+        allow=[],
+        depth=4,
+        ttl=60,
+    )
+    www = answer_query(web, build_query("www.themoviedb.org", 65))
+    media = answer_query(web, build_query("media.themoviedb.org", 65))
+    if www is None or media is None or web.name_ports.port_of("media.themoviedb.org") == 0:
+        print("порт картинок должен быть стабильным")
+        return 1
+    if web.name_ports.assign("media.themoviedb.org", "themoviedb.org") != web.name_ports.port_of("media.themoviedb.org"):
+        print("повторный запрос сменил порт")
+        return 1
+    if struct.pack("!HHH", 3, 2, 0)[:4] in www:
+        print("www остаётся на 443")
+        return 1
+    media_port = web.name_ports.port_of("media.themoviedb.org")
+    if not ALIAS_PORT_BASE <= media_port < ALIAS_PORT_BASE + ALIAS_PORT_COUNT or struct.pack("!H", media_port) not in media:
+        print(media_port)
+        return 1
+    api_port = web.name_ports.assign("api.themoviedb.org", "themoviedb.org")
+    if api_port == media_port or api_port == 0:
+        print(api_port, media_port)
+        return 1
+    for host in ("user.auth.xboxlive.com", "title.mgt.xboxlive.com"):
+        packet = answer_query(web, build_query(host, 65))
+        if packet is None or web.name_ports.port_of(host):
+            print(host)
+            return 1
+    if origin_port(443) != 443 or origin_port(media_port) != 443 or origin_port(80) != 80:
+        print("дополнительный порт должен открывать у сайта 443")
+        return 1
+    off = Settings(
+        domains=["themoviedb.org"],
+        exits_v4=["203.0.113.10"],
+        exits_v6=[],
+        own_ips=set(),
+        listen_ip="0.0.0.0",
+        dns_port=53,
+        proxy_ports=[80, 443],
+        upstreams=["1.1.1.1"],
+        allow=[],
+        depth=4,
+        ttl=60,
+        split_https=False,
+    )
+    if answer_query(off, build_query("media.themoviedb.org", 65)) is None or off.name_ports.port_of("media.themoviedb.org"):
+        print("выключенный SPLIT_HTTPS должен оставить 443")
+        return 1
+    held = Settings(
+        domains=["themoviedb.org"],
+        exits_v4=["203.0.113.10"],
+        exits_v6=[],
+        own_ips=set(),
+        listen_ip="0.0.0.0",
+        dns_port=53,
+        proxy_ports=[80, 443],
+        upstreams=["1.1.1.1"],
+        allow=[],
+        depth=4,
+        ttl=60,
+        same_port=["themoviedb.org"],
+    )
+    if answer_query(held, build_query("media.themoviedb.org", 65)) is None or held.name_ports.port_of("media.themoviedb.org"):
+        print("зона общего порта должна остаться на 443")
+        return 1
+    if proxy_ports_with_alias("80,443", "0") != "80,443" or proxy_ports_with_alias("80,443", "1") != "80,443,44400-44463":
+        print(proxy_ports_with_alias("80,443", "1"))
         return 1
     print("egress_proxy: ok")
     return 0

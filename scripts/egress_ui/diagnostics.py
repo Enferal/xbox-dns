@@ -14,10 +14,13 @@ from egress_proxy import (
     ConfigError,
     ascii_name,
     build_query,
+    SAME_PORT_ZONES,
     domain_matches,
+    match_base,
     parse_answers,
     parse_domain,
     parse_ports,
+    shared_port_name,
 )
 
 from .configstore import entries
@@ -87,7 +90,19 @@ def service_port_list(dns_port: str, proxy_ports: str) -> list[int]:
     return found
 
 
-def match_name(name: str, proxy_text: str, direct_text: str, depth: int) -> dict:
+def _zones(text: str | None) -> set[str]:
+    if text is None:
+        return set(SAME_PORT_ZONES)
+    found = set()
+    for token in entries(text):
+        try:
+            found.add(parse_domain(token))
+        except ConfigError:
+            continue
+    return found
+
+
+def match_name(name: str, proxy_text: str, direct_text: str, depth: int, same_text: str | None = None, split: bool = True) -> dict:
     try:
         host = ascii_name(name)
     except ConfigError as exc:
@@ -113,4 +128,22 @@ def match_name(name: str, proxy_text: str, direct_text: str, depth: int) -> dict
         verdict = "proxy"
     else:
         verdict = "none"
-    return {"name": host, "verdict": verdict, "proxy_rule": proxy, "direct_rule": direct, "depth": depth}
+    alias = False
+    if verdict == "proxy" and split:
+        bases = []
+        for token in entries(proxy_text):
+            try:
+                bases.append(parse_domain(token))
+            except ConfigError:
+                continue
+        base = match_base(host, bases, depth)
+        if base and base not in _zones(same_text) and not shared_port_name(host, base):
+            alias = True
+    return {
+        "name": host,
+        "verdict": verdict,
+        "proxy_rule": proxy,
+        "direct_rule": direct,
+        "depth": depth,
+        "alias": alias,
+    }

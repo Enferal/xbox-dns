@@ -32,6 +32,7 @@ class UiConfig:
     env_file: str = "/etc/egress-proxy/egress.env"
     destinations_file: str = "/etc/egress-proxy/allow-destinations.txt"
     direct_file: str = "/etc/egress-proxy/direct-destinations.txt"
+    same_port_file: str = "/etc/egress-proxy/same-port-destinations.txt"
     exit_ips_file: str = "/etc/egress-proxy/exit-ips.txt"
     status_file: str = "/run/egress-proxy/status.json"
     state_dir: str = "/var/lib/egress-proxy-ui"
@@ -66,6 +67,7 @@ class UiConfig:
             "env": self.env_file,
             "proxy": self.destinations_file,
             "direct": self.direct_file,
+            "sameport": self.same_port_file,
             "exits": self.exit_ips_file,
         }
 
@@ -117,6 +119,7 @@ def load_ui_config(path: str | None = None, environ: dict[str, str] | None = Non
     cfg.env_file = get("EGRESS_ENV_FILE", os.path.join(cfg.config_dir, "egress.env"))
     cfg.destinations_file = get("UI_DESTINATIONS_FILE", os.path.join(cfg.config_dir, "allow-destinations.txt"))
     cfg.direct_file = get("UI_DIRECT_FILE", os.path.join(cfg.config_dir, "direct-destinations.txt"))
+    cfg.same_port_file = get("UI_SAME_PORT_FILE", os.path.join(cfg.config_dir, "same-port-destinations.txt"))
     cfg.exit_ips_file = get("UI_EXIT_IPS_FILE", os.path.join(cfg.config_dir, "exit-ips.txt"))
     cfg.status_file = get("UI_STATUS_FILE", cfg.status_file)
     cfg.state_dir = get("UI_STATE_DIR", cfg.state_dir)

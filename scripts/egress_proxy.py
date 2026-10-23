@@ -19,6 +19,7 @@ import socket
 import struct
 import sys
 import time
+import zlib
 from dataclasses import dataclass, field
 
 
@@ -58,6 +59,33 @@ DIRECT_DOWNLOADS = (
 # Приставке хватает десятков соединений. Потолок режет только поток, который хочет занять весь сервер.
 MAX_DNS_INFLIGHT = 256
 MAX_PROXY_CONNECTIONS = 256
+# Один адрес VPS на все имена. Браузер склеивает HTTP/2, если сертификат покрывает оба имени
+# и порт один: картинки media.themoviedb.org уезжают в соединение www. Чужой порт в записи HTTPS
+# этого не даёт. Зоны приставки сюда не входят и остаются на 443.
+ALIAS_PORT_BASE = 44400
+ALIAS_PORT_COUNT = 64
+SAME_PORT_ZONES = frozenset(
+    {
+        "xboxlive.com",
+        "xbox.com",
+        "xboxservices.com",
+        "gamepass.com",
+        "bing.com",
+        "microsoft.com",
+        "akamai.net",
+        "windowsupdate.com",
+        "akamaized.net",
+        "live.com",
+        "microsoftonline.com",
+        "microsoftonline-p.com",
+        "msauth.net",
+        "msauthimages.net",
+        "msftauth.net",
+        "msftauthimages.net",
+        "ea.com",
+        "blob.core.windows.net",
+    }
+)
 
 
 class ConfigError(Exception):
@@ -66,6 +94,71 @@ class ConfigError(Exception):
 
 class NeedMore(Exception):
     pass
+
+
+class NamePorts:
+    """Порт, который браузер откроет к VPS. 0 значит обычный 443."""
+
+    def __init__(self) -> None:
+        self._ports: dict[str, int] = {}
+        self._used: set[int] = set()
+
+    def assign(self, name: str, base: str) -> int:
+        if name in self._ports:
+            return self._ports[name]
+        if shared_port_name(name, base):
+            self._ports[name] = 0
+            return 0
+        start = zlib.crc32(name.encode("ascii")) % ALIAS_PORT_COUNT
+        chosen = 0
+        for step in range(ALIAS_PORT_COUNT):
+            candidate = ALIAS_PORT_BASE + (start + step) % ALIAS_PORT_COUNT
+            if candidate not in self._used:
+                chosen = candidate
+                break
+        if not chosen:
+            chosen = ALIAS_PORT_BASE + start
+        self._used.add(chosen)
+        self._ports[name] = chosen
+        return chosen
+
+    def port_of(self, name: str) -> int:
+        return self._ports.get(name, 0)
+
+
+def shared_port_name(name: str, base: str) -> bool:
+    """Само имя зоны и www остаются на 443. Остальные имена получают свой порт."""
+    labels = name.split(".")
+    base_labels = base.split(".")
+    if len(labels) < len(base_labels) or labels[-len(base_labels) :] != base_labels:
+        return False
+    head = labels[: len(labels) - len(base_labels)]
+    return head in ([], ["www"])
+
+
+def alias_port_range() -> str:
+    return f"{ALIAS_PORT_BASE}-{ALIAS_PORT_BASE + ALIAS_PORT_COUNT - 1}"
+
+
+def proxy_ports_with_alias(proxy_ports: str, split_https: str) -> str:
+    if str(split_https).strip().lower() not in {"1", "true", "yes", "on"}:
+        return proxy_ports
+    extra = alias_port_range()
+    tokens = [item.strip() for item in proxy_ports.split(",") if item.strip()]
+    if extra in tokens:
+        return proxy_ports
+    return ",".join([*tokens, extra])
+
+
+def alias_listen_ports(proxy_ports: list[int]) -> list[int]:
+    occupied = set(proxy_ports)
+    return [ALIAS_PORT_BASE + offset for offset in range(ALIAS_PORT_COUNT) if ALIAS_PORT_BASE + offset not in occupied]
+
+
+def origin_port(local_port: int) -> int:
+    if ALIAS_PORT_BASE <= local_port < ALIAS_PORT_BASE + ALIAS_PORT_COUNT:
+        return 443
+    return local_port
 
 
 @dataclass
@@ -88,6 +181,9 @@ class Settings:
     dns_inflight: int = 0
     proxy_inflight: int = 0
     stats: dict[str, int] = field(default_factory=dict)
+    name_ports: NamePorts = field(default_factory=lambda: NamePorts())
+    split_https: bool = True
+    same_port: list[str] | None = None
 
     def count(self, key: str) -> None:
         self.stats[key] = self.stats.get(key, 0) + 1
@@ -194,6 +290,46 @@ def load_domains(path: str) -> list[str]:
     return found
 
 
+def load_same_port(path: str) -> list[str] | None:
+    """None — файла нет, остаются встроенные зоны приставки. Пустой файл — таких зон нет."""
+    if not os.path.isfile(path):
+        return None
+    found: list[str] = []
+    seen: set[str] = set()
+    for token in read_lines(path):
+        if _is_ip(token) or "/" in token:
+            fail(f"{token!r}: в списке общего порта нужны домены")
+        name = parse_domain(token)
+        if name not in seen:
+            seen.add(name)
+            found.append(name)
+    return found
+
+
+def same_port_zones(settings: Settings) -> set[str]:
+    if settings.same_port is None:
+        return set(SAME_PORT_ZONES)
+    return set(settings.same_port)
+
+
+def same_port_preset() -> str:
+    lines = [
+        "# Зоны, которые остаются на порту 443.",
+        "# Остальные зоны из списка «через прокси» получают отдельные порты.",
+        *sorted(SAME_PORT_ZONES),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def https_client_port(settings: Settings, name: str) -> int:
+    if not settings.split_https:
+        return 0
+    base = match_base(name, settings.domains, settings.depth)
+    if not base or base in same_port_zones(settings):
+        return 0
+    return settings.name_ports.assign(ascii_name(name), base)
+
+
 def is_connectivity_probe(name: str) -> bool:
     try:
         text = ascii_name(name)
@@ -267,21 +403,26 @@ def is_direct_download(name: str, names: list[str], depth: int) -> bool:
     return bool(names) and domain_matches(name, names, depth)
 
 
-def domain_matches(name: str, domains: list[str], depth: int) -> bool:
+def match_base(name: str, domains: list[str], depth: int) -> str | None:
     try:
-        ascii_text = ascii_name(name)
+        labels = ascii_name(name).split(".")
     except ConfigError:
-        return False
-    labels = ascii_text.split(".")
+        return None
+    found: str | None = None
     for base in domains:
         base_labels = base.split(".")
-        if labels == base_labels:
-            return True
-        if len(labels) > len(base_labels) and labels[-len(base_labels) :] == base_labels:
-            extra = len(labels) - len(base_labels)
-            if 1 <= extra <= depth:
-                return True
-    return False
+        matched = labels == base_labels or (
+            len(labels) > len(base_labels)
+            and labels[-len(base_labels) :] == base_labels
+            and 1 <= len(labels) - len(base_labels) <= depth
+        )
+        if matched and (found is None or len(base) < len(found)):
+            found = base
+    return found
+
+
+def domain_matches(name: str, domains: list[str], depth: int) -> bool:
+    return match_base(name, domains, depth) is not None
 
 
 def _is_ip(token: str) -> bool:
@@ -392,11 +533,14 @@ def nodata_soa(ttl: int) -> bytes:
     return b"\xc0\x0c" + struct.pack("!HHIH", 6, 1, ttl, len(rdata)) + rdata
 
 
-def service_binding_rdata(addresses: list[str]) -> bytes:
+def service_binding_rdata(addresses: list[str], port: int = 0) -> bytes:
     # Приставка спрашивает тип HTTPS и без этой записи не открывает TCP.
     # В списке протоколов нет h3, поэтому QUIC мимо прокси не выбирается.
+    # Ключи параметров идут по возрастанию: 1 alpn, 3 port, 4 ipv4hint.
     alpn = b"\x02h2\x08http/1.1"
     params = struct.pack("!HH", 1, len(alpn)) + alpn
+    if port:
+        params += struct.pack("!HHH", 3, 2, port)
     hints = b"".join(ipaddress.IPv4Address(ip).packed for ip in addresses if ":" not in ip)
     if hints:
         params += struct.pack("!HH", 4, len(hints)) + hints
@@ -555,7 +699,7 @@ def dns_trace(query: bytes, response: bytes, client: str, port: int, transport: 
     )
 
 
-def synthetic_response(query: bytes, qtype: int, addresses: list[str], ttl: int) -> bytes:
+def synthetic_response(query: bytes, qtype: int, addresses: list[str], ttl: int, port: int = 0) -> bytes:
     _name, _qtype, _qclass, qend = first_question(query)
     question = query[12:qend]
     query_flags = struct.unpack("!H", query[2:4])[0]
@@ -564,7 +708,7 @@ def synthetic_response(query: bytes, qtype: int, addresses: list[str], ttl: int)
     flags = 0x8080 | (query_flags & 0x0100) | (query_flags & 0x0010)
     records: list[bytes] = []
     if qtype in {QTYPE_HTTPS, QTYPE_SVCB}:
-        rdata = service_binding_rdata(addresses)
+        rdata = service_binding_rdata(addresses, port)
         records.append(b"\xc0\x0c" + struct.pack("!HHIH", qtype, 1, ttl, len(rdata)) + rdata)
     else:
         for address in addresses:
@@ -919,7 +1063,8 @@ def answer_query(settings: Settings, payload: bytes) -> bytes | None:
         addresses = settings.exits_v6
     else:
         addresses = []
-    return synthetic_response(payload, qtype, addresses, settings.ttl)
+    port = https_client_port(settings, name) if qtype in {QTYPE_HTTPS, QTYPE_SVCB} else 0
+    return synthetic_response(payload, qtype, addresses, settings.ttl, port)
 
 
 async def handle_dns(settings: Settings, payload: bytes, client_ip: str) -> bytes | None:
@@ -970,7 +1115,17 @@ async def handle_dns(settings: Settings, payload: bytes, client_ip: str) -> byte
         labels = {QTYPE_A: "A", QTYPE_AAAA: "AAAA", QTYPE_HTTPS: "HTTPS", QTYPE_SVCB: "SVCB"}
         if qtype in labels:
             shown = settings.exits_v6 if qtype == QTYPE_AAAA else settings.exits_v4
-            print(f"DNS {log_text(name)} {labels[qtype]} -> {', '.join(shown) or 'пусто'} клиент={client_ip}")
+            alias = ""
+            if qtype in {QTYPE_HTTPS, QTYPE_SVCB}:
+                try:
+                    number = settings.name_ports.port_of(ascii_name(name))
+                except ConfigError:
+                    number = 0
+                if number:
+                    alias = f" порт={number}"
+            print(
+                f"DNS {log_text(name)} {labels[qtype]} -> {', '.join(shown) or 'пусто'}{alias} клиент={client_ip}"
+            )
         return local
     settings.count("dns_forwarded")
     return await forward_query(settings, payload, asked_name)
@@ -1088,7 +1243,9 @@ async def handle_proxy(settings: Settings, reader: asyncio.StreamReader, writer:
             host = ascii_name(host)
             origins = await resolve_origin(settings, host)
             prefer_v6 = ":" in str(sockname[0])
-            (remote_reader, remote_writer), source = await connect_origin(settings, origins, port, prefer_v6)
+            (remote_reader, remote_writer), source = await connect_origin(
+                settings, origins, origin_port(port), prefer_v6
+            )
             if head:
                 remote_writer.write(head)
                 await remote_writer.drain()
@@ -1330,6 +1487,8 @@ async def load_settings() -> Settings:
     ipv6 = env("IPV6", "1").lower() in {"1", "true", "yes", "on"}
     if not ipv6:
         v6 = []
+    split_https = env("SPLIT_HTTPS", "1").lower() in {"1", "true", "yes", "on"}
+    same_port = load_same_port(env("SAME_PORT_FILE", "/etc/egress-proxy/same-port-destinations.txt"))
     return Settings(
         domains=domains,
         exits_v4=v4,
@@ -1344,6 +1503,8 @@ async def load_settings() -> Settings:
         ttl=ttl,
         ipv6=ipv6,
         direct=direct,
+        split_https=split_https,
+        same_port=same_port,
     )
 
 
@@ -1425,6 +1586,14 @@ def print_plan(settings: Settings) -> None:
     print("Имени нет в DNS — приставке уходит этот ответ, адрес VPS не подставляется.")
     print(f"dns.msftncsi.com остаётся адресом Microsoft, по IPv6: {NCSI_IPV6}")
     print(f"Остальные имена уходят на {', '.join(settings.upstreams)}")
+    if settings.split_https:
+        zones = ", ".join(sorted(same_port_zones(settings))) or "нет"
+        print(
+            f"Имена одной зоны, кроме www, получают порт {alias_port_range()}, чтобы браузер не склеивал HTTP/2. "
+            f"На 443 остаются: {zones}. Диапазон должен быть открыт в файрволе."
+        )
+    else:
+        print("SPLIT_HTTPS выключен: все имена открываются на 443.")
 
 
 class UdpNotice(asyncio.DatagramProtocol):
@@ -1521,6 +1690,29 @@ async def serve(check_only: bool, as_json: bool = False) -> None:
             proxies.append(await asyncio.start_server(lambda r, w: handle_proxy(settings, r, w), sock=sock))
         except OSError as exc:
             print(f"IPv6-порт {port} не слушается: {exc}", file=sys.stderr)
+    if settings.split_https:
+        for port in alias_listen_ports(settings.proxy_ports):
+            try:
+                proxies.append(
+                    await asyncio.start_server(
+                        lambda r, w: handle_proxy(settings, r, w),
+                        settings.listen_ip,
+                        port,
+                    )
+                )
+            except OSError as exc:
+                print(f"Порт {port} занят, прокси на нём не запущен: {exc}", file=sys.stderr)
+            if not settings.ipv6 or not settings.exits_v6:
+                continue
+            try:
+                sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                sock.bind(("::", port))
+                sock.setblocking(False)
+                proxies.append(await asyncio.start_server(lambda r, w: handle_proxy(settings, r, w), sock=sock))
+            except OSError as exc:
+                print(f"IPv6-порт {port} не слушается: {exc}", file=sys.stderr)
     print("Сервис запущен")
     status_path = os.environ.get("STATUS_FILE", "").strip()
     status_task = asyncio.create_task(status_loop(status_path, settings)) if status_path else None

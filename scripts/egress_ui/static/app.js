@@ -35,8 +35,9 @@ const COUNTERS = [
 ];
 
 const LIST_TABS = [
-  ["proxy", "Через прокси", "Имена, которые сервер называет своими. Строка example.com покрывает и поддомены."],
+  ["proxy", "Через прокси", "Имена, которые сервер называет своими. Строка example.com покрывает и поддомены. www и само имя зоны остаются на 443, остальные имена зоны получают отдельные порты."],
   ["direct", "Напрямую", "Имена закачки: получают настоящий адрес, файл качается с домашнего адреса."],
+  ["sameport", "Общий порт", "Эти зоны целиком остаются на 443. Уберите зону отсюда, чтобы её имена, кроме www, шли на порты 44400–44463."],
   ["exits", "Выходные IP", "Адреса VPS, которые получает устройство. auto — основной адрес сервера."],
 ];
 
@@ -404,6 +405,7 @@ async function pageOverview(view) {
       { class: "facts" },
       fact("Порт DNS", env.DNS_PORT),
       fact("Порты прокси", env.PROXY_PORTS),
+      fact("Свои порты", env.SPLIT_HTTPS === "0" ? "выключены, все на 443" : "44400–44463"),
       fact("IPv6", env.IPV6 === "1" ? "включён" : "выключен"),
       fact("Клиенты", env.ALLOW_CLIENTS || "все"),
     ),
@@ -478,9 +480,16 @@ function topTable(title, items) {
 
 async function pageDomains(view) {
   const [config, presets] = await Promise.all([api("/api/config"), api("/api/presets")]);
+  const sameBuiltin = presets.same_port || "";
   const original = { ...config.files };
   const drafts = {};
   for (const [kind] of LIST_TABS) drafts[kind] = config.files[kind] ?? "";
+  let sameUsesBuiltin = false;
+  if (original.sameport == null) {
+    drafts.sameport = sameBuiltin;
+    original.sameport = sameBuiltin;
+    sameUsesBuiltin = true;
+  }
   let tab = new URLSearchParams(location.hash.split("?")[1] || "").get("tab") || "proxy";
   if (!LIST_TABS.some(([key]) => key === tab)) tab = "proxy";
   let textMode = false;
@@ -516,6 +525,9 @@ async function pageDomains(view) {
     body.append(h("p", { class: "muted", text: hint }));
     if (tab === "direct" && original.direct === null) {
       body.append(h("p", { class: "alert warn", text: "Файла нет: служба использует встроенный список закачки. Сохранение создаст файл." }));
+    }
+    if (tab === "sameport" && sameUsesBuiltin && drafts.sameport === sameBuiltin) {
+      body.append(h("p", { class: "alert warn", text: "Файла ещё нет: показаны зоны приставки, они остаются на 443. «Применить» запишет этот список в файл." }));
     }
     const input = h("input", { type: "text", placeholder: tab === "exits" ? "203.0.113.5 или auto" : "example.com", autocomplete: "off" });
     const comment = h("input", { type: "text", placeholder: "комментарий (необязательно)", autocomplete: "off" });
@@ -564,6 +576,13 @@ async function pageDomains(view) {
         renderAll();
       }, "ghost"));
     }
+    if (tab === "sameport" && drafts.sameport !== sameBuiltin) {
+      tools.append(button("Зоны приставки", () => {
+        if (drafts.sameport.trim() && !window.confirm("Заменить список зонами приставки?")) return;
+        drafts.sameport = sameBuiltin;
+        renderAll();
+      }, "ghost"));
+    }
     if (drafts[tab] !== (original[tab] ?? "")) {
       tools.append(button("Отменить правки вкладки", () => {
         drafts[tab] = original[tab] ?? "";
@@ -608,16 +627,18 @@ async function pageDomains(view) {
       return;
     }
     clear(result);
-    busy(applyBtn, api("/api/config/apply", { files: draftFiles(), etag: config.etag })).then((data) => {
+    const sent = draftFiles();
+    busy(applyBtn, api("/api/config/apply", { files: sent, etag: config.etag })).then((data) => {
       result.append(applyResult(data));
       if (data.ok) {
         toast(data.message || "Применено", "ok");
+        if (Object.prototype.hasOwnProperty.call(sent, "sameport")) sameUsesBuiltin = false;
         for (const [kind] of LIST_TABS) original[kind] = drafts[kind];
         config.etag = null;
         api("/api/config").then((fresh) => {
           config.etag = fresh.etag;
         }, report);
-        renderTabs();
+        renderAll();
       }
     }, report);
   }, "primary");
@@ -626,15 +647,16 @@ async function pageDomains(view) {
   const matchOut = h("div", {});
   const matchBtn = button("Проверить имя", () => {
     clear(matchOut);
-    const payload = { name: matchInput.value.trim(), proxy: drafts.proxy };
+    const payload = { name: matchInput.value.trim(), proxy: drafts.proxy, sameport: drafts.sameport };
     if (!(original.direct === null && drafts.direct === "")) payload.direct = drafts.direct;
     busy(matchBtn, api("/api/diag/match", payload)).then((data) => {
       const verdicts = {
-        proxy: ["через прокси", "ok"],
+        proxy: ["через прокси, порт 443", "ok"],
+        alias: ["через прокси, свой порт", "ok"],
         direct: ["напрямую (закачка)", "warn"],
         none: ["мимо сервера", "muted"],
       };
-      const [text, tone] = verdicts[data.verdict];
+      const [text, tone] = verdicts[data.alias ? "alias" : data.verdict];
       matchOut.append(
         h("p", {}, h("code", { text: data.name }), " — ", badge(text, tone), data.proxy_rule ? ` правило ${data.proxy_rule}` : "", data.direct_rule ? ` правило закачки ${data.direct_rule}` : "", ` (глубина ${data.depth})`),
       );
@@ -966,7 +988,7 @@ async function pageFirewall(view) {
   const data = await api("/api/firewall");
   view.append(h("div", { class: "page-head" }, h("h1", { text: "Файрвол" }), button("Обновить", renderRoute, "ghost")));
   if (!data.available) {
-    view.append(card("ufw недоступен", h("p", { text: data.error || "Нет данных" }), h("p", { class: "muted", text: "Правила на хосте задаются вручную, например:" }), pre("ufw allow OpenSSH\nufw allow 53\nufw allow 80/tcp\nufw allow 443/tcp\nufw enable")));
+    view.append(card("ufw недоступен", h("p", { text: data.error || "Нет данных" }), h("p", { class: "muted", text: "Правила на хосте задаются вручную, например:" }), pre("ufw allow OpenSSH\nufw allow 53\nufw allow 80/tcp\nufw allow 443/tcp\nufw allow 44400:44463/tcp\nufw enable")));
     return;
   }
   const output = h("div", {});
@@ -979,7 +1001,7 @@ async function pageFirewall(view) {
   const statusCard = card(
     "Состояние",
     h("div", { class: "status-line" }, badge(data.active ? "включён" : "выключен", data.active ? "ok" : "bad"), h("span", { class: "muted", text: data.defaults || "" })),
-    h("p", { class: "muted", text: `Порты службы: DNS ${data.service.dns_port}, прокси ${data.service.proxy_ports}. Клиенты: ${data.service.clients || "все"}. Защищённые порты (SSH и UI): ${(data.protected_ports || []).join(", ")}.` }),
+    h("p", { class: "muted", text: `Порты службы: DNS ${data.service.dns_port}, прокси ${data.service.proxy_ports}${data.service.alias_ports ? `, свои порты сайтов ${data.service.alias_ports}` : ""}. Клиенты: ${data.service.clients || "все"}. Защищённые порты (SSH и UI): ${(data.protected_ports || []).join(", ")}.` }),
     data.active
       ? null
       : button("Включить ufw", () => {

@@ -125,6 +125,12 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(match_name("assets1.xboxlive.com", proxy, direct, 4)["verdict"], "direct")
         self.assertEqual(match_name("a.b.c.d.e.xboxlive.com", proxy, direct, 4)["verdict"], "none")
         self.assertEqual(match_name("example.org", proxy, direct, 4)["verdict"], "none")
+        sites = "themoviedb.org\nxboxlive.com\n"
+        self.assertTrue(match_name("media.themoviedb.org", sites, "", 4)["alias"])
+        self.assertFalse(match_name("www.themoviedb.org", sites, "", 4)["alias"])
+        self.assertFalse(match_name("user.auth.xboxlive.com", sites, "", 4)["alias"])
+        self.assertFalse(match_name("media.themoviedb.org", sites, "", 4, "themoviedb.org\n")["alias"])
+        self.assertFalse(match_name("media.themoviedb.org", sites, "", 4, None, False)["alias"])
         with self.assertRaises(ValueError):
             match_name("bad name", proxy, direct, 4)
 

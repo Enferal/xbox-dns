@@ -210,6 +210,8 @@ class App:
             "xbox_domains": read("allow-destinations.xbox.txt"),
             "direct": read("direct-destinations.txt"),
             "ufc5_ports": UFC5_PORTS,
+            "same_port": egress_proxy.same_port_preset(),
+            "alias_ports": egress_proxy.alias_port_range(),
         }
 
     def firewall_state(self) -> dict:
@@ -223,6 +225,7 @@ class App:
         data["service"] = {
             "dns_port": env["DNS_PORT"],
             "proxy_ports": env["PROXY_PORTS"],
+            "alias_ports": egress_proxy.alias_port_range() if env.get("SPLIT_HTTPS", "1") == "1" else "",
             "clients": env["ALLOW_CLIENTS"],
         }
         data["ssh_ports"] = self.ssh_port_list()
@@ -588,7 +591,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _mode_args(self) -> tuple[str, str, str]:
         env = self.app.store.env_values()
-        return env["DNS_PORT"], env["PROXY_PORTS"], env["ALLOW_CLIENTS"]
+        ports = egress_proxy.proxy_ports_with_alias(env["PROXY_PORTS"], env.get("SPLIT_HTTPS", "1"))
+        return env["DNS_PORT"], ports, env["ALLOW_CLIENTS"]
 
     def api_firewall_plan(self, body, query):
         plan = self._firewall().plan(str(body.get("mode", "")), *self._mode_args())
@@ -615,7 +619,10 @@ class Handler(BaseHTTPRequestHandler):
     def api_diag_ports(self, body, query):
         env = self.app.store.env_values()
         try:
-            ports = service_port_list(env["DNS_PORT"], env["PROXY_PORTS"])
+            ports = service_port_list(
+                env["DNS_PORT"],
+                egress_proxy.proxy_ports_with_alias(env["PROXY_PORTS"], env.get("SPLIT_HTTPS", "1")),
+            )
         except Exception as exc:
             raise HttpError(400, str(exc))
         return {"ports": check_ports(ports)}
@@ -626,9 +633,14 @@ class Handler(BaseHTTPRequestHandler):
         direct = body.get("direct") if isinstance(body.get("direct"), str) else state["files"]["direct"]
         if direct is None:
             direct = "\n".join(egress_proxy.DIRECT_DOWNLOADS)
+        if isinstance(body.get("sameport"), str):
+            same = body.get("sameport")
+        else:
+            same = state["files"].get("sameport")
+        split = state["env"].get("SPLIT_HTTPS", "1") == "1"
         try:
             depth = int(state["env"]["MAX_WILDCARD_DEPTH"])
-            return match_name(str(body.get("name", "")), proxy, direct, depth)
+            return match_name(str(body.get("name", "")), proxy, direct, depth, same, split)
         except ValueError as exc:
             raise HttpError(400, str(exc))
 

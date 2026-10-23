@@ -36,12 +36,13 @@ ENV_FIELDS = [
     ("MAX_WILDCARD_DEPTH", "4", "Сколько меток поддомена покрывает имя из списка (0–20)."),
     ("ANSWER_TTL", "60", "Сколько секунд устройство помнит ответ DNS."),
     ("IPV6", "1", "1 — отдавать и проксировать IPv6, 0 — только IPv4."),
+    ("SPLIT_HTTPS", "1", "1 — разным именам одной зоны, кроме www, отдельные порты 44400–44463. 0 — все на 443. Зоны с вкладки «Общий порт» всегда на 443."),
     ("ALLOW_CLIENTS", "", "Кто может обращаться. Пусто — любой адрес. IP или сети через запятую."),
 ]
 ENV_KEYS = [key for key, _default, _hint in ENV_FIELDS]
 ENV_DEFAULTS = {key: default for key, default, _hint in ENV_FIELDS}
 VALUE_RE = re.compile(r"^[A-Za-z0-9.,:/\- ]*$")
-LIST_KINDS = ("proxy", "direct", "exits")
+LIST_KINDS = ("proxy", "direct", "sameport", "exits")
 MAX_FILE_BYTES = 256 * 1024
 KEEP_BACKUPS = 30
 WIDE_ZONES = {
@@ -62,7 +63,7 @@ WIDE_ZONES = {
 }
 SSH_PORT = 22
 # Черновик проверяется со своими путями: строки с путями из egress.env его бы перебили.
-PATH_KEYS = {"DESTINATIONS_FILE", "DIRECT_FILE", "EXIT_IPS_FILE", "STATUS_FILE", "EGRESS_ENV_FILE"}
+PATH_KEYS = {"DESTINATIONS_FILE", "DIRECT_FILE", "SAME_PORT_FILE", "EXIT_IPS_FILE", "STATUS_FILE", "EGRESS_ENV_FILE"}
 
 
 class ValidationError(Exception):
@@ -166,6 +167,8 @@ def validate_env(values: dict[str, str], ui_port: int | None) -> dict[str, str]:
     number("ANSWER_TTL", 0, 86400)
     if values["IPV6"] not in {"0", "1"}:
         errors["IPV6"] = "Нужно 0 или 1"
+    if values["SPLIT_HTTPS"] not in {"0", "1"}:
+        errors["SPLIT_HTTPS"] = "Нужно 0 или 1"
     upstreams = [item.strip() for item in values["DNS_UPSTREAM"].split(",") if item.strip()]
     if not upstreams:
         errors["DNS_UPSTREAM"] = "Нужен хотя бы один адрес DNS"
@@ -340,6 +343,7 @@ class ConfigStore:
                 "env": "egress.env",
                 "proxy": "allow-destinations.txt",
                 "direct": "direct-destinations.txt",
+                "sameport": "same-port-destinations.txt",
                 "exits": "exit-ips.txt",
             }
             for kind, name in names.items():
@@ -356,6 +360,7 @@ class ConfigStore:
             }
             env["DESTINATIONS_FILE"] = os.path.join(folder, names["proxy"])
             env["DIRECT_FILE"] = os.path.join(folder, names["direct"])
+            env["SAME_PORT_FILE"] = os.path.join(folder, names["sameport"])
             env["EXIT_IPS_FILE"] = os.path.join(folder, names["exits"])
             env_path = os.path.join(folder, names["env"])
             if not os.path.exists(env_path):
