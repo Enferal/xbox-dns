@@ -747,6 +747,8 @@ def refused_response(query: bytes, rcode: int) -> bytes:
 
 
 def extract_sni(data: bytes) -> str | None:
+    # Имя часто лежит в первом TCP-сегменте, а key_share дописывает запись до ~1700 байт.
+    # Ждать хвост нельзя: клиент вроде Cursor закрывает сокет, и имя так и не читается.
     if not data:
         raise NeedMore()
     if data[0] != 22:
@@ -754,41 +756,55 @@ def extract_sni(data: bytes) -> str | None:
     if len(data) < 5:
         raise NeedMore()
     record_len = int.from_bytes(data[3:5], "big")
-    if len(data) < 5 + record_len:
-        raise NeedMore()
-    hs = data[5 : 5 + record_len]
-    if len(hs) < 42 or hs[0] != 1:
-        return None
-    pos = 4 + 2 + 32
-    if pos >= len(hs):
-        return None
-    session_len = hs[pos]
-    pos += 1 + session_len
-    if pos + 2 > len(hs):
-        return None
-    cipher_len = int.from_bytes(hs[pos : pos + 2], "big")
-    pos += 2 + cipher_len
-    if pos >= len(hs):
-        return None
-    comp_len = hs[pos]
-    pos += 1 + comp_len
-    if pos + 2 > len(hs):
-        return None
-    ext_len = int.from_bytes(hs[pos : pos + 2], "big")
-    pos += 2
-    ext_end = min(len(hs), pos + ext_len)
-    while pos + 4 <= ext_end:
-        etype = int.from_bytes(hs[pos : pos + 2], "big")
-        elen = int.from_bytes(hs[pos + 2 : pos + 4], "big")
+    record_end = 5 + record_len
+    complete = len(data) >= record_end
+    buf = data[:record_end]
+
+    def need(pos: int, size: int) -> None:
+        if pos + size > len(buf):
+            if complete:
+                raise ValueError("короткое рукопожатие")
+            raise NeedMore()
+
+    try:
+        pos = 5
+        need(pos, 4)
+        if buf[pos] != 1:
+            return None
         pos += 4
-        payload = hs[pos : pos + elen]
-        pos += elen
-        if etype != 0 or len(payload) < 5:
-            continue
-        name_type = payload[2]
-        name_len = int.from_bytes(payload[3:5], "big")
-        if name_type == 0 and 5 + name_len <= len(payload):
-            return payload[5 : 5 + name_len].decode("ascii", "ignore")
+        need(pos, 34)
+        pos += 34
+        need(pos, 1)
+        session_len = buf[pos]
+        pos += 1 + session_len
+        need(pos, 2)
+        cipher_len = int.from_bytes(buf[pos : pos + 2], "big")
+        pos += 2 + cipher_len
+        need(pos, 1)
+        comp_len = buf[pos]
+        pos += 1 + comp_len
+        need(pos, 2)
+        ext_len = int.from_bytes(buf[pos : pos + 2], "big")
+        pos += 2
+        ext_end = pos + ext_len
+        while pos < ext_end:
+            need(pos, 4)
+            etype = int.from_bytes(buf[pos : pos + 2], "big")
+            elen = int.from_bytes(buf[pos + 2 : pos + 4], "big")
+            pos += 4
+            need(pos, elen)
+            payload = buf[pos : pos + elen]
+            pos += elen
+            if etype != 0 or len(payload) < 5:
+                continue
+            name_type = payload[2]
+            name_len = int.from_bytes(payload[3:5], "big")
+            if name_type == 0 and 5 + name_len <= len(payload):
+                return payload[5 : 5 + name_len].decode("ascii", "ignore")
+    except ValueError:
+        return None
+    if not complete:
+        raise NeedMore()
     return None
 
 

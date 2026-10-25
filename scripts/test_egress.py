@@ -16,6 +16,7 @@ from egress_proxy import (
     build_query,
     domain_matches,
     NCSI_IPV4,
+    NeedMore,
     Settings,
     ALIAS_PORT_BASE,
     ALIAS_PORT_COUNT,
@@ -197,9 +198,22 @@ def main() -> int:
         print(page)
         return 1
 
-    sni = extract_sni(client_hello("api.example.com"))
-    if sni != "api.example.com":
+    hello = client_hello("api2.cursor.sh")
+    sni = extract_sni(hello)
+    if sni != "api2.cursor.sh":
         print(sni)
+        return 1
+    longer = hello + b"\x00" * 400
+    longer = longer[:3] + struct.pack("!H", int.from_bytes(hello[3:5], "big") + 400) + longer[5:]
+    if extract_sni(longer[: len(hello)]) != "api2.cursor.sh":
+        print("имя должно читаться из первого сегмента")
+        return 1
+    try:
+        extract_sni(hello[:40])
+    except NeedMore:
+        pass
+    else:
+        print("обрезанное рукопожатие без имени должно ждать хвост")
         return 1
     host = extract_host(b"GET / HTTP/1.1\r\nHost: API.Example.COM:443\r\n\r\n")
     if host != "API.Example.COM":
